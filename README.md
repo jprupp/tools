@@ -14,6 +14,9 @@ git clone https://github.com/jprupp/tools.git ~/Source/tools
 export PATH="$HOME/Source/tools:$PATH"   # in ~/.bashrc
 ```
 
+`haskell-dev` needs Python 3.11 or later, and nothing outside its standard
+library. The other scripts need bash.
+
 ## The packages they expect
 
 One package at the root of its repository, described by `package.yaml`
@@ -21,7 +24,81 @@ One package at the root of its repository, described by `package.yaml`
 branch `master`, which is on GitHub as `origin`. Its `CHANGELOG.md` has a
 heading for each version, `## [1.2.3]` or `## 1.2.3`, followed by anything.
 
+`haskell-dev` expects more of the layout: the library in `src`, the programs
+in `app`, and the tests in one [hspec](https://hspec.github.io/) suite named
+`spec`.
+
 ## Scripts
+
+### `haskell-dev`
+
+The loop of work on the code: build, test, and check the documentation, each
+much faster than the plain Stack command. It is for the time between two
+commits. It changes nothing in what is released: `stack build`, `stack test`
+and `stack bench` still build with optimisation, and CI does not use it.
+
+```sh
+haskell-dev build                   # build the package and its tests
+haskell-dev test                    # build, then run every test
+haskell-dev test Psbt Block         # the specs whose module name has a word
+haskell-dev test --match "/Haskoin.Block/asert/"
+haskell-dev docs                    # build the documentation and check it
+```
+
+- **`build`** compiles without optimisation, eight modules at a time: about
+  30 seconds for a clean build of haskoin-core, against 170 with
+  `stack build --test`. Do not mix it with a plain `stack build` in one
+  folder: the flags differ, so each switch compiles everything again. For the
+  same reason, never time code with it: a benchmark needs `stack bench`.
+- **`test`** runs the test binary as several processes at once, each on its
+  share of the specs, and reports them as one run: 5 to 10 seconds for
+  haskoin-core, against 30 in one process. It starts the shares that took
+  longest last time first. Each process has a temporary folder of its own
+  (`TMPDIR`). `--seed` runs a failure again, `--jobs` sets how many processes
+  run, and `--match` runs the tests of a path in one process, with the usual
+  output of hspec.
+- **`docs`** builds the Haddock documentation in a work folder of its own,
+  `.stack-work-docs`, so that the build of `haskell-dev build` stays valid.
+  Add that folder to `.gitignore`. Then it checks the documentation, and
+  fails when the check finds something.
+
+**The documentation check.** Haddock prints hundreds of warnings about the
+names of the dependencies, whose documentation is not built here, and a
+warning about a comment of the package is lost among them. The check keeps
+only the warnings about the package: a name that is out of scope or
+ambiguous, a link to a name that its module does not export, a module that
+is exported without documentation. It adds three mistakes that Haddock says
+nothing of:
+
+- a link that leads nowhere, such as a word in double quotes that is not the
+  name of a module;
+- `t'Name'` or `v'Name'` written right after a character that is no space,
+  as in `(t'Name')`: the page shows the letter;
+- a path written with plain slashes, as `m/44'/0'`: the page shows the text
+  between two slashes in italics. A slash is written `\/` in a comment.
+
+**Settings.** What sets a package apart is in `haskell-dev.toml`, at the root
+of its repository. The file is optional, and so is each setting. Each is a
+list of patterns for names of modules, where `*` stands for any text:
+
+```toml
+# The spec modules that take most of the time of the tests
+slow-specs = ["Haskoin.Block", "*.Regtest.*"]
+
+# The modules whose declarations a tool generates
+generated-modules = ["Haskoin.Wallet.Schema.V*"]
+```
+
+- **`slow-specs`**: each group of these spec modules is a share of its own,
+  so that the processes share the slow modules evenly. Every other module is
+  one share. Name a module only if its groups can run at the same time.
+- **`generated-modules`**: the documentation check leaves out the links
+  without a destination in these modules. Haddock has no place in a page for
+  some of the names that generated code refers to, as with a schema of
+  persistent, and nothing in the sources can change that.
+
+Without `slow-specs` the tests still run in several processes, one spec
+module each: the run then lasts as long as the slowest module.
 
 ### `haskell-release`
 

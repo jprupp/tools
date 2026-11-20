@@ -21,5 +21,10 @@ jobs:
       - name: shellcheck
         run: shellcheck haskell-release haskell-format check-stack-paths
 
+      # haskell-dev is Python: no package runs it in its CI, so at least
+      # make sure that it parses
+      - name: Python syntax
+        run: python3 -m py_compile haskell-dev
+
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
