@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Format the Haskell code of the git repository of the current directory with
+# ormolu, in place.
+#
+#   haskell-format [ormolu options]
+#
+# It formats every Haskell file that git tracks, wherever it is: src, test,
+# bench, app, Setup.hs, scripts. A list of directories in each repository
+# would miss a new one, and an untracked file is not yet part of the code.
+# Arguments go to ormolu, so `haskell-format --mode check` only checks.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2> /dev/null) \
+  || { echo "format: not in a git repository" >&2; exit 1; }
+cd "$root"
+
+if [ $# -eq 0 ]; then
+  set -- --mode inplace
+fi
+git ls-files -z '*.hs' | xargs -0 --no-run-if-empty ormolu "$@"

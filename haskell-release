@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Release a Haskell package to Hackage, with its documentation: the package
+# of the git repository of the current directory, at the version in its
+# package.yaml.
+#
+#   haskell-release [--dry-run]
+#
+# It expects the layout of the packages of jprupp on GitHub: one package at
+# the root of the repository, described by package.yaml (hpack), built with
+# Stack, released from branch master, which is on GitHub as origin, with a
+# CHANGELOG.md that has a heading for each version, "## [1.2.3]" or
+# "## 1.2.3", followed by anything.
+#
+# In order, stopping at the first failure:
+#
+#  1. checks: on branch master, nothing uncommitted (untracked files
+#     included), local master the same commit as master on origin, a
+#     CHANGELOG entry for the version, and no tag v<version> yet, here or on
+#     origin;
+#  2. builds the package and runs its tests (the integration tests too, when
+#     Podman can run them);
+#  3. builds the source archive, which runs Cabal's check;
+#  4. builds the documentation archive for Hackage and repacks it without the
+#     documentation of the internal libraries (see below);
+#  5. tags the commit v<version> and pushes the tag to origin;
+#  6. uploads the package to Hackage, then its documentation.
+#
+# --dry-run stops after step 4 and says where the two archives are. The
+# checks of git (branch, nothing uncommitted, in step with origin) stop it
+# too; the checks of the version only warn, so that it can be tried before
+# the version is bumped.
+#
+# Why the documentation is repacked: Cabal names the Hoogle file of an
+# internal library <package>:<library>.txt, such as
+# haskoin-store:integration.txt, and Hackage refuses an archive with a colon
+# in a file name, so `stack upload --documentation` fails for a package with
+# an internal library. Such libraries are usually for the tests, and their
+# documentation has no place on Hackage: the script drops every directory of
+# the archive that holds such a file, and any other file with a colon, then
+# uploads the archive itself. A package without one is uploaded unchanged.
+#
+# The Hackage account is read from ~/.stack/upload/credentials.json, the file
+# that `stack upload` saves, or from HACKAGE_USERNAME and HACKAGE_PASSWORD.
+# The password goes to curl on its standard input, never on a command line.
+#
+# JOBS sets how many packages stack builds at once (2 by default).
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2> /dev/null) \
+  || { echo "release: not in a git repository" >&2; exit 1; }
+cd "$root"
+[ -f package.yaml ] || { echo "release: no package.yaml in $root" >&2; exit 1; }
+
+dry_run=false
+case "${1:-}" in
+  --dry-run) dry_run=true ;;
+  "") ;;
+  *)
+    echo "usage: $0 [--dry-run]" >&2
+    exit 2
+    ;;
+esac
+
+die() {
+  echo "release: $*" >&2
+  exit 1
+}
+
+# a failed check: fatal, or a warning in a dry run
+check_failed() {
+  if $dry_run; then
+    echo "release: warning: $*" >&2
+  else
+    die "$*"
+  fi
+}
+
+name=$(sed -n 's/^name: *//p' package.yaml)
+version=$(sed -n 's/^version: *//p' package.yaml)
+tag="v$version"
+jobs=${JOBS:-2}
+[ -n "$name" ] && [ -n "$version" ] || die "no name or version in package.yaml"
+echo "release: $name $version"
+
+# 1. checks
+branch=$(git symbolic-ref -q --short HEAD || true)
+[ "$branch" = master ] || die "not on master (on ${branch:-a detached HEAD})"
+[ -z "$(git status --porcelain)" ] || die "uncommitted changes or untracked files"
+git fetch -q origin master
+local_head=$(git rev-parse master)
+remote_head=$(git rev-parse origin/master)
+[ "$local_head" = "$remote_head" ] \
+  || die "master is ${local_head:0:8} here and ${remote_head:0:8} on origin: pull or push first"
+# the version, its dots taken literally, in brackets or not, then the end of
+# the line or a space
+pattern="^## \\[?${version//./\\.}\\]?( |$)"
+grep -qE "$pattern" CHANGELOG.md 2> /dev/null || check_failed "CHANGELOG.md has no entry for $version"
+if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+  check_failed "tag $tag exists already"
+fi
+if [ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then
+  check_failed "tag $tag exists on origin already"
+fi
+
+# 2. build and test
+stack build --jobs "$jobs" --test --bench --no-run-benchmarks
+
+# 3. source archive
+dist=$(stack path --dist-dir)
+stack sdist
+sdist="$dist/$name-$version.tar.gz"
+[ -f "$sdist" ] || die "no source archive at $sdist"
+
+# 4. documentation archive. The directory it is packed from is emptied
+# first: stack leaves in it the documentation of components that no longer
+# exist, and would pack it again.
+docs_name="$name-$version-docs"
+rm -rf "$dist/doc/html/$docs_name"
+stack haddock --jobs "$jobs" --no-haddock-deps --haddock-for-hackage
+built="$dist/$docs_name.tar.gz"
+[ -f "$built" ] || die "no documentation archive at $built"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+tar -xzf "$built" -C "$work"
+# the directories of the internal libraries: those that hold a file with a
+# colon, right under the top directory of the archive
+find "$work/$docs_name" -mindepth 2 -maxdepth 2 -name '*:*' -printf '%h\n' \
+  | sort -u \
+  | while read -r dir; do
+      echo "release: leaving out the documentation of ${dir##*/}"
+      rm -rf "$dir"
+    done
+find "$work/$docs_name" -name '*:*' -print -delete
+docs="$work/upload/$docs_name.tar.gz"
+mkdir -p "$work/upload"
+# ustar is the tar format that Hackage takes
+tar --format=ustar -czf "$docs" -C "$work" "$docs_name"
+if tar -tzf "$docs" | grep -q ':'; then
+  die "the documentation archive still has a colon in a file name"
+fi
+
+if $dry_run; then
+  kept="$dist/$docs_name-hackage.tar.gz"
+  cp "$docs" "$kept"
+  echo "release: dry run done"
+  echo "  package:       $sdist"
+  echo "  documentation: $kept"
+  exit 0
+fi
+
+# 5. tag
+git tag -a "$tag" -m "$name $version"
+git push origin "$tag"
+
+# 6. Hackage. The curl configuration, with the password, goes to curl's
+# standard input.
+stack upload .
+credentials() {
+  python3 - <<'EOF'
+import json, os, sys
+user = os.environ.get("HACKAGE_USERNAME")
+password = os.environ.get("HACKAGE_PASSWORD")
+if not (user and password):
+    path = os.path.expanduser("~/.stack/upload/credentials.json")
+    try:
+        with open(path) as f:
+            c = json.load(f)
+    except OSError:
+        sys.exit("release: no Hackage account: set HACKAGE_USERNAME and HACKAGE_PASSWORD")
+    user, password = c["username"], c["password"]
+quote = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+print('user = "%s:%s"' % (quote(user), quote(password)))
+EOF
+}
+status=$(
+  credentials \
+    | curl -s -o /dev/null -w '%{http_code}' -K - -X PUT \
+      -H 'Content-Type: application/x-tar' \
+      -H 'Content-Encoding: gzip' \
+      --data-binary "@$docs" \
+      "https://hackage.haskell.org/package/$name-$version/docs"
+)
+[ "$status" = 200 ] || die "Hackage answered $status to the documentation; the package is up"
+echo "release: $name $version is on Hackage with its documentation, tagged $tag"
