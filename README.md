@@ -48,8 +48,15 @@ haskell-dev docs                    # build the documentation and check it
 - **`build`** compiles without optimisation, eight modules at a time: about
   30 seconds for a clean build of haskoin-core, against 170 with
   `stack build --test`. Do not mix it with a plain `stack build` in one
-  folder: the flags differ, so each switch compiles everything again. For the
-  same reason, never time code with it: a benchmark needs `stack bench`.
+  folder. Stack does not see the change of flags: when no source has changed
+  since the other kind of build, it builds nothing and keeps the objects of
+  the other flags, so a plain `stack build --test` right after
+  `haskell-dev build` gives code without optimisation. That matters only to
+  what runs from that folder, such as the tests: a package that depends on
+  this one builds its own copy. After the next change to a source, GHC sees
+  the flags differ and compiles everything again.
+  Never time code with `haskell-dev`: a benchmark needs `stack bench`, which
+  configures the package again and so compiles it with optimisation.
 - **`test`** runs the test binary as several processes at once, each on its
   share of the specs, and reports them as one run: 5 to 10 seconds for
   haskoin-core, against 30 in one process. It starts the shares that took
