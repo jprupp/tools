@@ -79,7 +79,9 @@ name=$(sed -n 's/^name: *//p' package.yaml)
 version=$(sed -n 's/^version: *//p' package.yaml)
 tag="v$version"
 jobs=${JOBS:-2}
-[ -n "$name" ] && [ -n "$version" ] || die "no name or version in package.yaml"
+if [ -z "$name" ] || [ -z "$version" ]; then
+  die "no name or version in package.yaml"
+fi
 echo "release: $name $version"
 
 # 1. checks

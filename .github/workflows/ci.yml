@@ -1,0 +1,25 @@
+name: CI
+
+# Lints the scripts and the workflows of this repository. The packages that
+# use them test them for real: a broken script fails their CI or release.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: shellcheck and actionlint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck is on the runner
+      - name: shellcheck
+        run: shellcheck haskell-release haskell-format check-stack-paths
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color

@@ -1,0 +1,167 @@
+name: Haskell with Stack
+
+# The CI of the Haskell packages of jprupp, shared: each package calls it from
+# its own workflow, with what sets it apart as inputs.
+#
+#   jobs:
+#     stack:
+#       uses: jprupp/tools/.github/workflows/haskell-stack.yml@master
+#       with:
+#         apt-packages: libsecp256k1-dev pkg-config
+#
+# It builds and tests the package twice with Stack:
+#
+# - os-libraries: against the C libraries that Ubuntu packages, as most users
+#   build it, with --no-nix;
+# - nix: with --nix, so that GHC and the C libraries listed under "nix:" in
+#   stack.yaml come from nixpkgs, as on NixOS or with "stack --nix" locally.
+#
+# Both jobs also build the Haddock documentation, so broken markup fails CI,
+# and both first reject a stack.yaml that names a local path
+# (check-stack-paths). A package that needs more, such as tests against
+# nodes in containers, adds jobs of its own next to this one.
+
+on:
+  workflow_call:
+    inputs:
+      apt-packages:
+        description: Ubuntu packages that the build with the OS libraries needs, separated by spaces
+        type: string
+        default: ""
+      bench:
+        description: Compile the benchmarks too, without running them
+        type: boolean
+        default: false
+      env:
+        description: Environment of the build and the tests, one NAME=value a line
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Longest run of each job
+        type: number
+        default: 120
+
+jobs:
+  os-libraries:
+    name: Stack with OS libraries
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The scripts of jprupp/tools, out of the way of the package
+      - uses: actions/checkout@v4
+        with:
+          repository: jprupp/tools
+          path: .jprupp-tools
+
+      - name: Reject local path dependencies
+        run: .jprupp-tools/check-stack-paths
+
+      - name: Install system libraries
+        if: inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          sudo apt-get update
+          # one package a word: the splitting is wanted
+          # shellcheck disable=SC2086
+          sudo apt-get install -y $PACKAGES
+
+      - name: Set the environment
+        if: inputs.env != ''
+        env:
+          VARIABLES: ${{ inputs.env }}
+        run: printf '%s\n' "$VARIABLES" >> "$GITHUB_ENV"
+
+      - name: Set up Stack
+        uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: latest
+          stack-no-global: true
+
+      - name: Cache Stack
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            .stack-work
+          key: stack-os-${{ runner.os }}-${{ hashFiles('stack.yaml', 'stack.yaml.lock', '**/package.yaml') }}
+          restore-keys: stack-os-${{ runner.os }}-
+
+      - name: Build, test and build the documentation
+        env:
+          BENCH: ${{ inputs.bench && '--bench --no-run-benchmarks' || '' }}
+        run: |
+          # shellcheck disable=SC2086
+          stack --no-nix build --install-ghc --test $BENCH --haddock --no-haddock-deps
+
+  nix:
+    name: Stack with Nix
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: jprupp/tools
+          path: .jprupp-tools
+
+      - name: Reject local path dependencies
+        run: .jprupp-tools/check-stack-paths
+
+      # Stack runs the build inside nix-shell, which takes GHC and the
+      # libraries from <nixpkgs>; nix_path points that at nixos-unstable.
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Set the environment
+        if: inputs.env != ''
+        env:
+          VARIABLES: ${{ inputs.env }}
+        run: printf '%s\n' "$VARIABLES" >> "$GITHUB_ENV"
+
+      # The cache is kept per release of nixpkgs: what Stack built against
+      # one release links to paths of the Nix store that the next one may
+      # not have.
+      - name: Resolve the nixpkgs revision
+        id: nixpkgs
+        run: |
+          version=$(nix-instantiate --eval --json -E '(import <nixpkgs> {}).lib.version' | jq -r .)
+          echo "nixpkgs $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Stack
+        uses: haskell-actions/setup@v2
+        with:
+          enable-stack: true
+          stack-version: latest
+          stack-no-global: true
+
+      - name: Cache Stack
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack
+            .stack-work
+          key: "stack-nix-${{ runner.os }}-${{ steps.nixpkgs.outputs.version }}-\
+            ${{ hashFiles('stack.yaml', 'stack.yaml.lock', '**/package.yaml') }}"
+          restore-keys: stack-nix-${{ runner.os }}-${{ steps.nixpkgs.outputs.version }}-
+
+      # Stack names its compiled Setup programs by Cabal and GHC version
+      # only. A cache from an older nixos-unstable can hold one linked against
+      # Nix store paths that this runner does not have, and running it fails
+      # with "posix_spawnp: does not exist". Rebuilding them takes seconds.
+      - name: Drop cached Setup programs
+        run: rm -rf ~/.stack/setup-exe-cache
+
+      - name: Build, test and build the documentation
+        env:
+          BENCH: ${{ inputs.bench && '--bench --no-run-benchmarks' || '' }}
+        run: |
+          # shellcheck disable=SC2086
+          stack --nix build --test $BENCH --haddock --no-haddock-deps

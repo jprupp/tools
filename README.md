@@ -64,6 +64,56 @@ Formats every Haskell file that git tracks with
 [ormolu](https://github.com/tweag/ormolu), in place. Arguments go to ormolu:
 `haskell-format --mode check` checks without changing anything.
 
+### `check-stack-paths`
+
+Fails if `stack.yaml` names a package by a path outside the repository, such
+as an extra-dep pointing at a sibling checkout, `../haskoin-core`. Such a
+path builds on the author's machine and nowhere else: CI checks out the
+repository alone, and so does anyone who clones it. Pin a released version,
+or a git commit, instead. The shared workflow runs it first; run it before
+pushing to catch the mistake sooner.
+
+## Shared CI workflow
+
+`.github/workflows/haskell-stack.yml` is the CI of every package. A package
+calls it from its own `.github/workflows/ci.yml`:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  stack:
+    uses: jprupp/tools/.github/workflows/haskell-stack.yml@master
+    with:
+      apt-packages: libsecp256k1-dev pkg-config
+```
+
+It builds and tests the package twice with Stack: against the C libraries
+that Ubuntu packages, with `--no-nix`, and with `--nix`, so that GHC and the
+C libraries come from nixpkgs. Both jobs build the Haddock documentation, so
+broken markup fails CI, and both run `check-stack-paths` first.
+
+| Input | Default | What it is |
+| --- | --- | --- |
+| `apt-packages` | none | Ubuntu packages that the build with the OS libraries needs, separated by spaces |
+| `bench` | `false` | Compile the benchmarks too, without running them |
+| `env` | none | Environment of the build and the tests, one `NAME=value` a line |
+| `timeout-minutes` | `120` | Longest run of each job |
+
+A package that needs more, such as tests against nodes in containers, adds
+jobs of its own next to the call. Its checks are named `stack / Stack with
+OS libraries` and `stack / Stack with Nix`.
+
+A change here reaches every package at its next run, since they call the
+workflow at `master`: run a package's CI by hand (`workflow_dispatch`) after
+changing it.
+
 ## License
 
 [MIT](LICENSE)

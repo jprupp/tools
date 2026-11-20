@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fail if the stack.yaml of the git repository of the current directory
+# names a package by a path outside the repository, such as an extra-dep
+# pointing at a sibling checkout, ../haskoin-core.
+#
+#   check-stack-paths
+#
+# Such a path builds on the author's machine and nowhere else: CI checks out
+# the repository alone, and so does anyone who clones it. Pin a released
+# version, or a git commit, in extra-deps instead. The shared CI workflow
+# runs this first, so the mistake fails with this message rather than deep
+# inside Stack; run it before pushing to catch it sooner.
+#
+# Inside GitHub Actions the message is an error annotation on stack.yaml.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2> /dev/null) \
+  || { echo "check-stack-paths: not in a git repository" >&2; exit 1; }
+cd "$root"
+[ -f stack.yaml ] || exit 0
+
+# a list item whose value starts with ./, ../, / or ~
+local_path='^[[:space:]]*-[[:space:]]*(\.\.?/|/|~)'
+
+if grep -nE "$local_path" stack.yaml; then
+  message="stack.yaml refers to local paths outside the repository."
+  message+=" Pin released versions (or a git commit) in extra-deps"
+  message+=" before pushing."
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::error file=stack.yaml::$message"
+  else
+    echo "check-stack-paths: $message" >&2
+  fi
+  exit 1
+fi
