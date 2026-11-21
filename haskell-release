@@ -39,9 +39,12 @@
 # the archive that holds such a file, and any other file with a colon, then
 # uploads the archive itself. A package without one is uploaded unchanged.
 #
-# The Hackage account is read from ~/.stack/upload/credentials.json, the file
-# that `stack upload` saves, or from HACKAGE_USERNAME and HACKAGE_PASSWORD.
-# The password goes to curl on its standard input, never on a command line.
+# The Hackage account comes from HACKAGE_USERNAME and HACKAGE_PASSWORD when
+# they are set; otherwise the script asks for both before it tags anything, and
+# the password, typed without echo, lives only in the memory of this run: it is
+# never saved (set save-hackage-creds: false in ~/.stack/config.yaml so that
+# stack does not save it either). It reaches `stack upload` through those two
+# variables and curl on its standard input, never on a command line.
 #
 # JOBS sets how many packages stack builds at once (2 by default).
 set -euo pipefail
@@ -151,6 +154,17 @@ if $dry_run; then
   exit 0
 fi
 
+# The Hackage account, asked for now so that a mistake stops the release
+# before the tag exists.
+if [ -z "${HACKAGE_USERNAME:-}" ] || [ -z "${HACKAGE_PASSWORD:-}" ]; then
+  [ -t 0 ] || die "no terminal to ask for the Hackage account: set HACKAGE_USERNAME and HACKAGE_PASSWORD"
+  read -rp "Hackage username: " HACKAGE_USERNAME
+  read -rsp "Hackage password for $HACKAGE_USERNAME: " HACKAGE_PASSWORD
+  echo
+  [ -n "$HACKAGE_USERNAME" ] && [ -n "$HACKAGE_PASSWORD" ] || die "no Hackage account given"
+fi
+export HACKAGE_USERNAME HACKAGE_PASSWORD
+
 # 5. tag
 git tag -a "$tag" -m "$name $version"
 git push origin "$tag"
@@ -164,13 +178,7 @@ import json, os, sys
 user = os.environ.get("HACKAGE_USERNAME")
 password = os.environ.get("HACKAGE_PASSWORD")
 if not (user and password):
-    path = os.path.expanduser("~/.stack/upload/credentials.json")
-    try:
-        with open(path) as f:
-            c = json.load(f)
-    except OSError:
-        sys.exit("release: no Hackage account: set HACKAGE_USERNAME and HACKAGE_PASSWORD")
-    user, password = c["username"], c["password"]
+    sys.exit("release: no Hackage account: set HACKAGE_USERNAME and HACKAGE_PASSWORD")
 quote = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
 print('user = "%s:%s"' % (quote(user), quote(password)))
 EOF
