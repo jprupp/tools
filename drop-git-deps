@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Take out of Stack's snapshot databases the packages that stack.yaml takes
+# from git, so that the next build compiles them again.
+#
+#   drop-git-deps STACK-COMMAND...
+#
+# for example `drop-git-deps stack --no-nix`. The command runs ghc-pkg,
+# with `exec`, to rebuild the caches of the databases.
+#
+# Why: Stack names a package that it built from git by its version, its
+# flags and the names of its dependencies, not by its commit. Pin a new
+# commit of haskoin-core, and the new build of it has the name of the old
+# one. A package built against the old one, haskoin-store-data from git,
+# say, keeps its name too, and Stack takes it as built. Its library then
+# asks for code of haskoin-core that the new build does not have, and the
+# link fails on an undefined symbol. A CI cache restored from another
+# stack.yaml.lock brings such packages back, and so does a machine that
+# built the old pin. Dropping every package from git costs their build
+# once, which the cache of the next run keeps.
+#
+# The shared CI workflow runs this when it restored a cache from another
+# stack.yaml.lock. Packages from Hackage that depend on a package from git
+# are not dropped: none of the packages of this family has one.
+set -euo pipefail
+
+[ $# -gt 0 ] || { echo "usage: drop-git-deps STACK-COMMAND..." >&2; exit 2; }
+
+root=$(git rev-parse --show-toplevel 2> /dev/null) \
+  || { echo "drop-git-deps: not in a git repository" >&2; exit 1; }
+cd "$root"
+[ -f stack.yaml.lock ] || exit 0
+
+# the names of the packages whose completed entry in the lock file is a
+# git repository
+names=$(
+  awk '
+    /^- completed:/ { git = 0; name = "" }
+    /^    git:/ { git = 1 }
+    /^    name:/ { name = $2 }
+    /^  original:/ { if (git && name != "") print name }
+  ' stack.yaml.lock
+)
+[ -n "$names" ] || exit 0
+
+shopt -s nullglob
+for db in "$HOME"/.stack/snapshots/*/*/*/pkgdb; do
+  dropped=0
+  for name in $names; do
+    for conf in "$db/$name"-[0-9]*.conf; do
+      echo "drop-git-deps: dropping $(basename "$conf" .conf) from $db"
+      # the library of the package, next to the database, by the id of the
+      # package, which is the name of its file
+      id=$(basename "$conf" .conf)
+      rm -rf "$(dirname "$db")"/lib/*/"$id" "$(dirname "$db")"/lib/*/libHS"$id"-*
+      rm -f "$conf"
+      dropped=1
+    done
+  done
+  if [ "$dropped" = 1 ]; then
+    "$@" exec -- ghc-pkg --package-db "$db" recache
+  fi
+done

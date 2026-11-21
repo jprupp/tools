@@ -82,6 +82,7 @@ jobs:
           stack-no-global: true
 
       - name: Cache Stack
+        id: cache
         uses: actions/cache@v4
         with:
           path: |
@@ -89,6 +90,12 @@ jobs:
             .stack-work
           key: stack-os-${{ runner.os }}-${{ hashFiles('stack.yaml', 'stack.yaml.lock', '**/package.yaml') }}
           restore-keys: stack-os-${{ runner.os }}-
+
+      # A cache of another stack.yaml.lock can hold packages built from git
+      # at another commit, under the names of the new ones (drop-git-deps)
+      - name: Drop packages from git
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: .jprupp-tools/drop-git-deps stack --no-nix
 
       - name: Build, test and build the documentation
         env:
@@ -143,6 +150,7 @@ jobs:
           stack-no-global: true
 
       - name: Cache Stack
+        id: cache
         uses: actions/cache@v4
         with:
           path: |
@@ -158,6 +166,11 @@ jobs:
       # with "posix_spawnp: does not exist". Rebuilding them takes seconds.
       - name: Drop cached Setup programs
         run: rm -rf ~/.stack/setup-exe-cache
+
+      # as in the job with the OS libraries
+      - name: Drop packages from git
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: .jprupp-tools/drop-git-deps stack --nix
 
       - name: Build, test and build the documentation
         env:

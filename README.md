@@ -157,6 +157,18 @@ repository alone, and so does anyone who clones it. Pin a released version,
 or a git commit, instead. The shared workflow runs it first; run it before
 pushing to catch the mistake sooner.
 
+### `drop-git-deps`
+
+Takes the packages that `stack.yaml` pins from git out of Stack's snapshot
+databases, so that the next build compiles them again:
+`drop-git-deps stack --no-nix`. Stack names a package built from git by its
+version, flags and dependencies, not by its commit, so the build of a new
+pin has the name of the old one, and a package built against the old one is
+taken as built: its library then asks for code that is gone, and the link
+fails on an undefined symbol. The shared workflow runs it when it restores
+a cache of another `stack.yaml.lock`; run it by hand when a build fails so
+after a new pin.
+
 ## Shared CI workflow
 
 `.github/workflows/haskell-stack.yml` is the CI of every package. A package
@@ -181,7 +193,9 @@ jobs:
 It builds and tests the package twice with Stack: against the C libraries
 that Ubuntu packages, with `--no-nix`, and with `--nix`, so that GHC and the
 C libraries come from nixpkgs. Both jobs build the Haddock documentation, so
-broken markup fails CI, and both run `check-stack-paths` first.
+broken markup fails CI, and both run `check-stack-paths` first. A cache
+restored from another `stack.yaml.lock` loses its packages from git first
+(`drop-git-deps`).
 
 | Input | Default | What it is |
 | --- | --- | --- |
