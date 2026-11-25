@@ -161,7 +161,9 @@ if [ -z "${HACKAGE_USERNAME:-}" ] || [ -z "${HACKAGE_PASSWORD:-}" ]; then
   read -rp "Hackage username: " HACKAGE_USERNAME
   read -rsp "Hackage password for $HACKAGE_USERNAME: " HACKAGE_PASSWORD
   echo
-  [ -n "$HACKAGE_USERNAME" ] && [ -n "$HACKAGE_PASSWORD" ] || die "no Hackage account given"
+  if [ -z "$HACKAGE_USERNAME" ] || [ -z "$HACKAGE_PASSWORD" ]; then
+    die "no Hackage account given"
+  fi
 fi
 export HACKAGE_USERNAME HACKAGE_PASSWORD
 
